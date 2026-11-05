@@ -15,12 +15,13 @@ window.__ModuleLoader__.load({
 
     const zh = {
       'tab.title': '旁问',
+      'command.label': '旁问',
+      'command.description': '基于当前会话问一个问题，回答不进主对话',
       'panel.placeholder': '问一个旁问…',
       'panel.send': '发送',
       'panel.stop': '停止',
       'panel.stopped': '已停止',
       'panel.thinking': '正在思考…',
-      'panel.usage': '用法：/btw <问题>',
       'footer.turns': '{n} 轮',
       'footer.tps': '{n} tok/s',
       'footer.tokens': '{n} tok',
@@ -29,12 +30,13 @@ window.__ModuleLoader__.load({
     };
     const en = {
       'tab.title': 'Side question',
+      'command.label': 'Side question',
+      'command.description': 'Ask a question about this session without adding to the conversation',
       'panel.placeholder': 'Ask a side question…',
       'panel.send': 'Send',
       'panel.stop': 'Stop',
       'panel.stopped': 'Stopped',
       'panel.thinking': 'Thinking…',
-      'panel.usage': 'Usage: /btw <your question>',
       'footer.turns': '{n} turns',
       'footer.tps': '{n} tok/s',
       'footer.tokens': '{n} tok',
@@ -289,19 +291,15 @@ window.__ModuleLoader__.load({
       if (carried !== '') submit(sessionId);
     }
 
-    /** Bare `/btw`: teach the usage instead of opening an empty panel. */
-    function showUsage(sessionId) {
-      clearComposer(sessionId);
+    /** Bare `/btw`: leave `/btw ` in the composer so the next words describe it. */
+    function startDescription(sessionId) {
       const input = composerFor(sessionId);
-      if (typeof input?.notify === 'function') {
-        try {
-          input.notify('info', t('panel.usage'));
-          return;
-        } catch {
-          /* fall through to the panel */
-        }
+      try {
+        input?.setDraft?.('/btw ');
+        input?.focus?.();
+      } catch {
+        /* the session may have gone away */
       }
-      openPanel(sessionId, '');
     }
 
     // ── markdown (small, dependency-free, host-matched) ────────────────────
@@ -580,6 +578,7 @@ window.__ModuleLoader__.load({
         'sidebarRight',
         'sidebarRightTabs',
         'layout',
+        'commandUi',
         'inputTriggers',
       ],
       apply(ctx) {
@@ -613,14 +612,32 @@ window.__ModuleLoader__.load({
           inject: (sessionId) => ({ sessionId }),
         }, BtwTitle));
 
-        // 3) `/btw …` never reaches the model: claim the line first. A bare
-        //    `/btw` teaches the usage instead of opening an empty panel.
+        // 3) The `/` menu row. Picking it only arms the composer with `/btw `
+        //    so the next words describe the question; the panel opens when that
+        //    line is sent. A bare `/btw` + Enter takes the same path.
+        ctx.effect(
+          () => ctx.commandUi.register({
+            name: 'btw',
+            label: () => t('command.label'),
+            description: () => t('command.description'),
+            available: () => true,
+            ui: {
+              kind: 'action',
+              run: (session) => startDescription(session?.sessionId),
+            },
+          }),
+          'dsh-btw: /btw menu row',
+        );
+
+        // 4) `/btw <question>` never reaches the model: claim the line first.
+        //    `candidates` settles this source with no rows, so the `/` menu
+        //    shows only the row above; it must be async, the menu awaits it.
         ctx.effect(
           () => ctx.inputTriggers.registerSource({
             trigger: '/',
             name: 'btw',
             order: 10,
-            candidates: () => [],
+            candidates: async () => [],
             matchEnter: (session, line) => {
               const match = /^\/btw(?:\s+([\s\S]*))?$/i.exec(String(line ?? '').trim());
               if (match === null) return undefined;
@@ -628,7 +645,7 @@ window.__ModuleLoader__.load({
               if (typeof sessionId !== 'string' || sessionId === '') return undefined;
               const question = (match[1] ?? '').trim();
               if (question === '') {
-                showUsage(sessionId);
+                startDescription(sessionId);
                 return 'handled';
               }
               openPanel(sessionId, question);

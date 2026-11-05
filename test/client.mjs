@@ -4,10 +4,10 @@ import assert from 'node:assert/strict';
 
 const calls = [];
 const drafts = [];
-const notices = [];
 const requests = [];
 let loaded;
 let source;
+let contribution;
 const slotRegistrations = [];
 let tabDefinition;
 
@@ -37,6 +37,7 @@ globalThis.fetch = async (url, init) => {
     JSON.stringify({ type: 'meta', provider: 'p', model: 'm' }),
     JSON.stringify({ type: 'delta', text: '文件名是 ' }),
     JSON.stringify({ type: 'delta', text: 'config.ts。' }),
+    JSON.stringify({ type: 'usage', usage: { inputTokens: 1200, outputTokens: 80, cacheReadTokens: 1000 }, contextWindow: 100000 }),
     JSON.stringify({ type: 'done', finish: 'stop' }),
     '',
   ].join('\n');
@@ -59,13 +60,13 @@ assert.deepEqual(moduleExports.inject, [
   'sidebarRight',
   'sidebarRightTabs',
   'layout',
+  'commandUi',
   'inputTriggers',
 ]);
 
 const composer = {
   setDraft: (text) => drafts.push(text),
   focus: () => undefined,
-  notify: (level, text) => notices.push([level, text]),
 };
 
 const ctx = {
@@ -96,6 +97,12 @@ const ctx = {
     },
     register: (options, Component) => {
       slotRegistrations.push({ options, Component });
+      return () => undefined;
+    },
+  },
+  commandUi: {
+    register: (registered) => {
+      contribution = registered;
       return () => undefined;
     },
   },
@@ -143,18 +150,26 @@ for (const { options } of slotRegistrations) {
   assert.equal(options.inject('session-1').sessionId, 'session-1');
 }
 
-// 3) A bare `/btw` teaches the usage and opens nothing.
+// 3) The `/` menu row arms the composer instead of opening anything.
+assert.equal(contribution.name, 'btw');
+assert.equal(contribution.ui.kind, 'action');
+assert.equal(contribution.available({ sessionId: 'session-1' }), true);
+contribution.ui.run({ sessionId: 'session-1' });
+assert.equal(drafts.at(-1), '/btw ');
+assert.equal(calls.length, 0, 'the menu row must not open the sidebar or a tab');
+
+// 4) The trigger source settles empty (never a broken menu group) and falls
+//    back to the same composer arming for a bare line.
 assert.equal(source.trigger, '/');
 assert.equal(source.name, 'btw');
-assert.deepEqual(source.candidates({}, {}), []);
+assert.deepEqual(await source.candidates({}, {}), []);
 assert.equal(source.matchEnter({ sessionId: 'session-1' }, '普通的一句话'), undefined);
 assert.equal(source.matchEnter({ sessionId: 'session-1' }, '/other 命令'), undefined);
-
 assert.equal(source.matchEnter({ sessionId: 'session-1' }, '/btw'), 'handled');
-assert.deepEqual(notices.at(-1), ['info', 'panel.usage']);
-assert.equal(calls.length, 0, 'bare /btw must not open the sidebar or a tab');
+assert.equal(drafts.at(-1), '/btw ');
+assert.equal(calls.length, 0, 'a bare /btw must not open the sidebar or a tab');
 
-// 4) `/btw <question>` is claimed rather than sent, and asks immediately.
+// 5) `/btw <question>` is claimed rather than sent, and asks immediately.
 assert.equal(source.matchEnter({ sessionId: 'session-1' }, '/btw 刚才提到的文件名？'), 'handled');
 await new Promise((resolve) => setTimeout(resolve, 20));
 assert.deepEqual(calls[0], ['openRightbar', false, false]);
@@ -168,7 +183,7 @@ assert.deepEqual(requests[0].body, {
   history: [],
 });
 
-// 5) A later question replays the earlier exchange into its request history.
+// 6) A later question replays the earlier exchange into its request history.
 source.matchEnter({ sessionId: 'session-1' }, '/btw 第二个问题');
 await new Promise((resolve) => setTimeout(resolve, 20));
 assert.equal(requests.length, 2);
