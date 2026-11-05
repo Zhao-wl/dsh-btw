@@ -1,20 +1,28 @@
 window.__ModuleLoader__.load({
   id: '@local/dsh-btw',
   factory(require) {
+    const React = require('react');
     /** Locale namespace owned by this plugin. */
     const NS = 'btw';
+    /** Identity + kind of the removed hand-written panel, kept only to retire its tabs. */
+    const LEGACY_ID = '@local/dsh-btw/legacy';
+    const LEGACY_KIND = 'btw';
 
     const zh = {
       'command.label': '旁问',
       'command.description': '基于当前会话开一个旁问，回答不进主对话',
       'error.title': '旁问打开失败',
       'error.model': '当前会话还没有可用的 agent：先在主会话里发一条消息再试',
+      'legacy.title': '旁问（旧版）',
+      'legacy.message': '这是旧版旁问页签，关闭它即可。',
     };
     const en = {
       'command.label': 'Side question',
       'command.description': 'Open a side chat seeded from this conversation; its answers never enter the main one',
       'error.title': 'Could not open the side chat',
       'error.model': 'This session has no live agent yet: send a message in the main chat first',
+      'legacy.title': 'Side question (legacy)',
+      'legacy.message': 'This is a tab from the removed side panel; close it.',
     };
 
     /** Client root context, captured in apply. */
@@ -133,12 +141,61 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /**
+     * Retire a tab left behind by the removed hand-written panel: close it as
+     * soon as its own session renders the tab, so it never follows the user
+     * into another session. When closing is unavailable it says so instead of
+     * showing the slot's "nothing can view this" placeholder.
+     */
+    function LegacyTabView(props) {
+      const sessionId = typeof props?.sessionId === 'string' ? props.sessionId : '';
+      const info = typeof props?.useTabInfo === 'function' ? props.useTabInfo() : undefined;
+      const tabId = info?.tab?.id;
+      const [unavailable, setUnavailable] = React.useState(false);
+
+      React.useEffect(() => {
+        if (sessionId === '' || tabId === undefined) return undefined;
+        const frame = requestAnimationFrame(() => {
+          try {
+            const right = host?.get?.('sidebarRight');
+            if (typeof right?.closeIn === 'function') right.closeIn(sessionId, tabId);
+            else setUnavailable(true);
+          } catch {
+            setUnavailable(true);
+          }
+        });
+        return () => cancelAnimationFrame(frame);
+      }, [sessionId, tabId]);
+
+      if (!unavailable) return null;
+      return React.createElement('div', {
+        style: { padding: 12, color: 'var(--dsw-alias-label-tertiary)', fontSize: 13 },
+      }, t('legacy.message'));
+    }
+
     return {
-      inject: ['locale', 'sessions', 'sidebarRight', 'layout', 'commandUi', 'inputTriggers'],
+      inject: ['slots', 'locale', 'sessions', 'sidebarRight', 'layout', 'commandUi', 'inputTriggers'],
       apply(ctx) {
         host = ctx;
         ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-btw: dictionaries');
         t = ctx.locale.bind(NS);
+
+        // 0) Retire tabs created by the removed custom panel. The kind stays
+        //    registered (so dispatch reaches us) but no new tab is ever opened.
+        ctx.effect(
+          () => ctx.sidebarRightTabs.register({
+            id: LEGACY_ID,
+            kind: LEGACY_KIND,
+            title: () => t('legacy.title'),
+          }),
+          'dsh-btw: legacy tab type',
+        );
+        ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
+          name: 'sidebar.right.pane.tab',
+          key: LEGACY_ID,
+          locale: NS,
+          inject: (sessionId) => ({ sessionId }),
+        }, LegacyTabView));
 
         // 1) The `/` menu row arms the composer; it never opens an empty chat.
         ctx.effect(

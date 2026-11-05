@@ -21,6 +21,12 @@ globalThis.requestAnimationFrame = (callback) => {
   return 0;
 };
 
+const React = {
+  createElement: (type, props, ...children) => ({ type, props, children }),
+  useState: (initial) => [initial, () => undefined],
+  useEffect: () => undefined,
+};
+
 globalThis.fetch = async (url, init) => {
   requests.push({ url, body: JSON.parse(init.body) });
   return new Response(JSON.stringify({ childId: 'child-1' }), {
@@ -33,10 +39,12 @@ await import('../client.js');
 assert.equal(loaded.id, '@local/dsh-btw');
 
 const moduleExports = loaded.factory((name) => {
-  throw new Error(`client must not require "${name}"`);
+  assert.equal(name, 'react', 'the legacy tab view needs the browser React module');
+  return React;
 });
 
 assert.deepEqual(moduleExports.inject, [
+  'slots',
   'locale',
   'sessions',
   'sidebarRight',
@@ -50,6 +58,9 @@ const composer = {
   focus: () => undefined,
   notify: (level, text) => calls.push(['notify', level, text]),
 };
+
+let tabDefinition;
+const slotRegistrations = [];
 
 const ctx = {
   effect: (factory) => {
@@ -65,6 +76,22 @@ const ctx = {
       return () => undefined;
     },
     bind: () => (key) => key,
+  },
+  sidebarRightTabs: {
+    register: (definition) => {
+      tabDefinition = definition;
+      return () => undefined;
+    },
+  },
+  slots: {
+    inject: (owner, callback) => {
+      callback();
+      return () => undefined;
+    },
+    register: (options, Component) => {
+      slotRegistrations.push({ options, Component });
+      return () => undefined;
+    },
   },
   commandUi: {
     register: (registered) => {
@@ -99,6 +126,14 @@ const ctx = {
 };
 
 moduleExports.apply(ctx);
+
+// 0) Tabs left by the removed custom panel are retired, not re-opened.
+assert.equal(tabDefinition.id, '@local/dsh-btw/legacy');
+assert.equal(tabDefinition.kind, 'btw');
+assert.deepEqual(slotRegistrations.map((entry) => [entry.options.name, entry.options.key]), [
+  ['sidebar.right.pane.tab', '@local/dsh-btw/legacy'],
+]);
+assert.equal(slotRegistrations[0].options.inject('session-1').sessionId, 'session-1');
 
 // 1) The menu row arms the composer instead of opening an empty chat.
 assert.equal(contribution.name, 'btw');
