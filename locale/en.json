@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Side Questions (/btw)",
+    "description": "Ask the current session a one-off side question in the right sidebar. The answer never enters the main conversation and cannot use tools."
+  }
+}
