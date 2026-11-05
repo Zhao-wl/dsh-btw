@@ -27,8 +27,8 @@ export const inject = ['connection', 'agents', 'sessions', 'subagents'];
 export const Config = z.object({
   provider: z.string().default('spawn').description("Subagent provider: 'spawn' (fresh, preset-driven) or 'fork' (seeded with the parent's log)."),
   agentPreset: z.string().default('minimal').description("Agent preset for the child; empty keeps the provider's default. 'minimal' mounts only the basic built-ins."),
-  contextMessages: z.natural().default(16).description('Recent user/assistant messages handed to the side chat as text context.'),
-  contextChars: z.natural().default(6000).description('Per-message character clamp for that text context.'),
+  contextMessages: z.natural().default(0).description('Recent user/assistant messages copied into the first prompt as text. 0 (default) sends the question alone.'),
+  contextChars: z.natural().default(2000).description('Per-message character clamp used only when contextMessages > 0.'),
   label: z.string().default('旁问').description('Label shown for the side-chat child in the subagent catalog.'),
   maxLive: z.natural().default(6).description('How many side-chat activations stay resident before the oldest is released.'),
 });
@@ -57,7 +57,7 @@ function messageText(message) {
 
 /** Recent user/assistant text of the parent session, newest last. */
 function recentContext(session, limit, chars) {
-  if (session === undefined) return [];
+  if (session === undefined || !(limit > 0)) return [];
   let messages;
   try {
     messages = session.deriveMessages();

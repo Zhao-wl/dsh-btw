@@ -47,14 +47,17 @@ Client                                    Host
       config:
         provider: spawn        # spawn = 轻量；fork = 继承父会话完整日志（重，但上下文完全一致）
         agentPreset: minimal   # 走 minimal 组合；置空则用 provider 默认
-        contextMessages: 16    # 注入上下文的消息条数
-        contextChars: 6000     # 单条上下文截断字符数
+        contextMessages: 0     # 0 = 首条提问只有问题本身（默认）；>0 才会复制最近 N 条消息
+        contextChars: 2000     # contextMessages > 0 时的单条截断字符数
         label: 旁问             # subagent 目录里的标签
         maxLive: 6             # 同时常驻的旁问数量
 ```
 
-想换回“完整上下文”模式：`provider: fork`、`agentPreset: ""`。fork 会把父会话已完成轮次作为子会话
-历史（更慢、更大，但上下文完全一致）。
+首条提问默认**只包含你的问题**，不会把历史对话整段塞进去。想要少量上下文就把 `contextMessages`
+调到 1–3；注意它是以文本形式出现在首条用户消息里的（spawn 子会话没有别的注入通道）。
+
+想换回“完整上下文”模式：`provider: fork`、`agentPreset: ""` 且 `contextMessages: 0`。fork 会把父会话
+已完成轮次作为子会话历史（更慢、更大，但上下文完全一致）。
 
 ## 已知边界
 

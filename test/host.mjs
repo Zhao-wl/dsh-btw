@@ -83,6 +83,33 @@ assert.match(prompt, /这个文件导出了三个常量/);
 assert.doesNotMatch(prompt, /TOOL RESULT SHOULD NOT APPEAR/, 'tool results are not context');
 assert.match(prompt, /刚才那个文件叫什么？/);
 
+// With the default contextMessages: 0 the prompt is exactly the question.
+plugin.apply({
+  ...ctx,
+  subagents: {
+    getProvider: (name) => (name === 'spawn' ? {} : undefined),
+    startActivation: async (registration) => {
+      starts.push(registration);
+      return { childId: 'child-plain', result: Promise.resolve({}), dispose: async () => undefined };
+    },
+  },
+}, {
+  provider: 'spawn',
+  agentPreset: 'minimal',
+  contextMessages: 0,
+  contextChars: 2000,
+  label: '旁问',
+  maxLive: 6,
+});
+const plain = await route.fetch(new Request('http://127.0.0.1:52072/api/dsh-btw/side-chat', {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ sessionId: 'session-1', question: '当前会话做了什么' }),
+}));
+assert.equal(plain.status, 200);
+const plainPrompt = starts.at(-1).request.prompt;
+assert.deepEqual(plainPrompt, [{ type: 'text', text: '当前会话做了什么' }], 'no context by default');
+
 const noAgent = await route.fetch(new Request('http://127.0.0.1:52072/api/dsh-btw/side-chat', {
   method: 'POST',
   headers: { 'content-type': 'application/json' },
