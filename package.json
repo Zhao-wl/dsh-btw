@@ -1,9 +1,9 @@
 {
   "name": "@local/dsh-btw",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Side questions: /btw asks the current session's model a one-off question in the right sidebar pane, without touching the main conversation.",
+  "description": "Side chat: /btw forks the current session into a continuable subagent and opens it in the right sidebar's native conversation, so rendering matches the main chat.",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -29,13 +29,13 @@
         "@deepseek-ai/dsh-client-ui-commands",
         "@deepseek-ai/dsh-client-ui-input-trigger",
         "@deepseek-ai/dsh-client-ui-sidebar-right",
-        "@deepseek-ai/dsh-client-ui-layout"
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-subagent"
       ]
     }
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.0.5",
-    "@deepseek-ai/schemastery": "^3.18.5",
-    "react": "^18.2.0"
+    "@deepseek-ai/schemastery": "^3.18.5"
   }
 }

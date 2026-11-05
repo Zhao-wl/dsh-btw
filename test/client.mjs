@@ -1,15 +1,12 @@
-// Client-half test: load the real client.js under a fake module loader and
-// assert the registrations and the `/btw …` arbitration it performs.
+// Client-half test: fake module loader + fake services, real client.js.
 import assert from 'node:assert/strict';
 
-const calls = [];
 const drafts = [];
+const calls = [];
 const requests = [];
 let loaded;
-let source;
 let contribution;
-const slotRegistrations = [];
-let tabDefinition;
+let source;
 
 globalThis.window = {
   __ModuleLoader__: {
@@ -24,41 +21,25 @@ globalThis.requestAnimationFrame = (callback) => {
   return 0;
 };
 
-const React = {
-  createElement: (type, props, ...children) => ({ type, props, children }),
-  useSyncExternalStore: () => ({}),
-  useRef: () => ({ current: null }),
-  useEffect: () => undefined,
-};
-
 globalThis.fetch = async (url, init) => {
-  requests.push({ url, init, body: JSON.parse(init.body) });
-  const ndjson = [
-    JSON.stringify({ type: 'meta', provider: 'p', model: 'm' }),
-    JSON.stringify({ type: 'delta', text: '文件名是 ' }),
-    JSON.stringify({ type: 'delta', text: 'config.ts。' }),
-    JSON.stringify({ type: 'usage', usage: { inputTokens: 1200, outputTokens: 80, cacheReadTokens: 1000 }, contextWindow: 100000 }),
-    JSON.stringify({ type: 'done', finish: 'stop' }),
-    '',
-  ].join('\n');
-  return new Response(ndjson, { status: 200, headers: { 'content-type': 'application/x-ndjson' } });
+  requests.push({ url, body: JSON.parse(init.body) });
+  return new Response(JSON.stringify({ childId: 'child-1' }), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
 };
 
 await import('../client.js');
-assert.ok(loaded, 'client.js must register a module');
 assert.equal(loaded.id, '@local/dsh-btw');
 
 const moduleExports = loaded.factory((name) => {
-  assert.equal(name, 'react', 'only the browser React module may be required');
-  return React;
+  throw new Error(`client must not require "${name}"`);
 });
 
 assert.deepEqual(moduleExports.inject, [
-  'slots',
   'locale',
   'sessions',
   'sidebarRight',
-  'sidebarRightTabs',
   'layout',
   'commandUi',
   'inputTriggers',
@@ -67,6 +48,7 @@ assert.deepEqual(moduleExports.inject, [
 const composer = {
   setDraft: (text) => drafts.push(text),
   focus: () => undefined,
+  notify: (level, text) => calls.push(['notify', level, text]),
 };
 
 const ctx = {
@@ -78,27 +60,11 @@ const ctx = {
   locale: {
     register: (ns, dicts) => {
       assert.equal(ns, 'btw');
-      assert.ok(dicts.zh?.['tab.title']);
-      assert.ok(dicts.en?.['tab.title']);
+      assert.ok(dicts.zh?.['command.label']);
+      assert.ok(dicts.en?.['command.label']);
       return () => undefined;
     },
     bind: () => (key) => key,
-  },
-  sidebarRightTabs: {
-    register: (definition) => {
-      tabDefinition = definition;
-      return () => undefined;
-    },
-  },
-  slots: {
-    inject: (owner, callback) => {
-      callback();
-      return () => undefined;
-    },
-    register: (options, Component) => {
-      slotRegistrations.push({ options, Component });
-      return () => undefined;
-    },
   },
   commandUi: {
     register: (registered) => {
@@ -114,8 +80,7 @@ const ctx = {
   },
   sidebarRight: {
     mounted: { getSnapshot: () => 'session-1' },
-    openTabIn: (sessionId, kind) => calls.push(['openTabIn', sessionId, kind]),
-    openTab: (kind) => calls.push(['openTab', kind]),
+    openResource: (address) => calls.push(['openResource', address]),
   },
   layout: {
     openRightbar: (track, fullscreen) => calls.push(['openRightbar', track, fullscreen]),
@@ -135,62 +100,43 @@ const ctx = {
 
 moduleExports.apply(ctx);
 
-// 1) One tab type, opened by kind.
-assert.equal(tabDefinition.id, '@local/dsh-btw');
-assert.equal(tabDefinition.kind, 'btw');
-assert.equal(tabDefinition.keepMounted, true);
-assert.equal(tabDefinition.title(), 'tab.title');
-
-// 2) A body and a title, both keyed by the type id and session-scoped.
-assert.deepEqual(slotRegistrations.map((entry) => [entry.options.name, entry.options.key]), [
-  ['sidebar.right.pane.tab', '@local/dsh-btw'],
-  ['sidebar.right.pane.tab.title', '@local/dsh-btw'],
-]);
-for (const { options } of slotRegistrations) {
-  assert.equal(options.inject('session-1').sessionId, 'session-1');
-}
-
-// 3) The `/` menu row arms the composer instead of opening anything.
+// 1) The menu row arms the composer instead of opening an empty chat.
 assert.equal(contribution.name, 'btw');
 assert.equal(contribution.ui.kind, 'action');
-assert.equal(contribution.available({ sessionId: 'session-1' }), true);
 contribution.ui.run({ sessionId: 'session-1' });
 assert.equal(drafts.at(-1), '/btw ');
-assert.equal(calls.length, 0, 'the menu row must not open the sidebar or a tab');
+assert.equal(calls.length, 0);
 
-// 4) The trigger source settles empty (never a broken menu group) and falls
-//    back to the same composer arming for a bare line.
+// 2) The trigger source settles empty, so the `/` menu never shows it.
 assert.equal(source.trigger, '/');
-assert.equal(source.name, 'btw');
 assert.deepEqual(await source.candidates({}, {}), []);
 assert.equal(source.matchEnter({ sessionId: 'session-1' }, '普通的一句话'), undefined);
-assert.equal(source.matchEnter({ sessionId: 'session-1' }, '/other 命令'), undefined);
 assert.equal(source.matchEnter({ sessionId: 'session-1' }, '/btw'), 'handled');
 assert.equal(drafts.at(-1), '/btw ');
-assert.equal(calls.length, 0, 'a bare /btw must not open the sidebar or a tab');
+assert.equal(calls.length, 0);
 
-// 5) `/btw <question>` is claimed rather than sent, and asks immediately.
+// 3) `/btw <question>` starts a fork subagent and opens its native sidebar chat.
 assert.equal(source.matchEnter({ sessionId: 'session-1' }, '/btw 刚才提到的文件名？'), 'handled');
 await new Promise((resolve) => setTimeout(resolve, 20));
-assert.deepEqual(calls[0], ['openRightbar', false, false]);
-assert.deepEqual(calls[1], ['openTabIn', 'session-1', 'btw']);
-assert.equal(drafts.at(-1), '', 'the consumed /btw line leaves the composer');
 assert.equal(requests.length, 1);
-assert.equal(requests[0].url, 'http://127.0.0.1:52072/api/dsh-btw/ask');
-assert.deepEqual(requests[0].body, {
-  sessionId: 'session-1',
-  question: '刚才提到的文件名？',
-  history: [],
-});
+assert.equal(requests[0].url, 'http://127.0.0.1:52072/api/dsh-btw/side-chat');
+assert.deepEqual(requests[0].body, { sessionId: 'session-1', question: '刚才提到的文件名？' });
+assert.equal(drafts.at(-1), '');
+assert.deepEqual(calls[0], ['openRightbar', false, false]);
+assert.deepEqual(calls[1], [
+  'openResource',
+  'dsh-resource://subagentchat/session/child-1?parent=session-1&mode=continuable',
+]);
 
-// 6) A later question replays the earlier exchange into its request history.
-source.matchEnter({ sessionId: 'session-1' }, '/btw 第二个问题');
-await new Promise((resolve) => setTimeout(resolve, 20));
-assert.equal(requests.length, 2);
-assert.deepEqual(requests[1].body, {
-  sessionId: 'session-1',
-  question: '第二个问题',
-  history: [{ question: '刚才提到的文件名？', answer: '文件名是 config.ts。' }],
+// 4) A failing host route surfaces one error notice instead of a broken tab.
+globalThis.fetch = async () => new Response(JSON.stringify({ message: 'no agent' }), {
+  status: 409,
+  headers: { 'content-type': 'application/json' },
 });
+source.matchEnter({ sessionId: 'session-1' }, '/btw 再来一次');
+await new Promise((resolve) => setTimeout(resolve, 20));
+const notice = calls.find((call) => call[0] === 'notify');
+assert.ok(notice, 'a failure must be reported to the user');
+assert.equal(notice[1], 'error');
 
 console.log('client half: all assertions passed');
