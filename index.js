@@ -1,12 +1,14 @@
 /**
  * Host half of `/btw`.
  *
- * A side chat is a DSH **fork subagent**: the built-in `fork` provider seeds a
- * child session with the parent's completed-turn prefix (so it inherits this
- * conversation's context), while `delivery: 'caller'` keeps its result out of
- * the main conversation. The Client then opens that child session in the right
- * sidebar's native conversation tab, which owns rendering, thinking blocks,
- * tool-call rows, the composer and the usage footer.
+ * A side chat is a **lightweight subagent**: the built-in `spawn` provider
+ * starts a fresh child with its own (usually the `minimal`) agent preset, so
+ * the side chat does not carry the main session's whole plugin composition.
+ * Only recent user/assistant text is handed over as read-only context. The
+ * Client then opens the child in the right sidebar's native conversation tab,
+ * which owns rendering, thinking blocks, tool rows and the composer.
+ *
+ * delivery:'caller' keeps every side-chat result out of the main conversation.
  *
  * This plugin contributes exactly one route:
  *   POST /api/dsh-btw/side-chat { sessionId, question } -> { childId }
@@ -19,11 +21,14 @@ import z from '@deepseek-ai/schemastery';
 export const name = 'dsh-btw';
 
 /** Services this plugin cannot run without. */
-export const inject = ['connection', 'agents', 'subagents'];
+export const inject = ['connection', 'agents', 'sessions', 'subagents'];
 
 /** Tunable values; change them in `cordis.patch.yml`. */
 export const Config = z.object({
-  provider: z.string().default('fork').description('Subagent provider used for a side chat.'),
+  provider: z.string().default('spawn').description("Subagent provider: 'spawn' (fresh, preset-driven) or 'fork' (seeded with the parent's log)."),
+  agentPreset: z.string().default('minimal').description("Agent preset for the child; empty keeps the provider's default. 'minimal' mounts only the basic built-ins."),
+  contextMessages: z.natural().default(16).description('Recent user/assistant messages handed to the side chat as text context.'),
+  contextChars: z.natural().default(6000).description('Per-message character clamp for that text context.'),
   label: z.string().default('旁问').description('Label shown for the side-chat child in the subagent catalog.'),
   maxLive: z.natural().default(6).description('How many side-chat activations stay resident before the oldest is released.'),
 });
@@ -34,6 +39,56 @@ function json(status, body) {
     status,
     headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
   });
+}
+
+/** Text of one message's content blocks. */
+function messageText(message) {
+  const content = message?.content;
+  if (typeof content === 'string') return content.trim();
+  if (!Array.isArray(content)) return '';
+  const parts = [];
+  for (const block of content) {
+    if (block !== null && typeof block === 'object' && block.type === 'text' && typeof block.text === 'string') {
+      parts.push(block.text);
+    }
+  }
+  return parts.join('\n').trim();
+}
+
+/** Recent user/assistant text of the parent session, newest last. */
+function recentContext(session, limit, chars) {
+  if (session === undefined) return [];
+  let messages;
+  try {
+    messages = session.deriveMessages();
+  } catch {
+    return [];
+  }
+  const lines = [];
+  for (const message of messages) {
+    const role = message?.role;
+    if (role !== 'user' && role !== 'assistant') continue;
+    let text = messageText(message);
+    if (text === '') continue;
+    if (text.length > chars) text = `${text.slice(0, chars)} …[truncated]`;
+    lines.push(`${role === 'user' ? 'User' : 'Assistant'}: ${text}`);
+  }
+  return lines.slice(-limit);
+}
+
+/** One user text prompt: read-only context (when any) plus the question. */
+function buildPrompt(contextLines, question) {
+  if (contextLines.length === 0) return [{ type: 'text', text: question }];
+  const context = [
+    'Read-only context from the main conversation so far (tool calls are omitted):',
+    '',
+    contextLines.join('\n\n'),
+    '',
+    '---',
+    '',
+    'Side question: ' + question,
+  ].join('\n');
+  return [{ type: 'text', text: context }];
 }
 
 /** Start one side-chat child and answer with its session id. */
@@ -53,7 +108,7 @@ async function handle(ctx, config, live, request) {
   if (parent === undefined) {
     return json(409, { message: '当前会话没有运行中的 agent：先在主会话里发一条消息再试' });
   }
-  const provider = typeof config.provider === 'string' && config.provider !== '' ? config.provider : 'fork';
+  const provider = typeof config.provider === 'string' && config.provider !== '' ? config.provider : 'spawn';
   if (ctx.subagents.getProvider(provider) === undefined) {
     return json(503, { message: `没有注册名为 "${provider}" 的 subagent provider` });
   }
@@ -63,18 +118,32 @@ async function handle(ctx, config, live, request) {
   if (request.signal.aborted) abortFromClient();
   else request.signal.addEventListener('abort', abortFromClient, { once: true });
 
-  try {
-    const activation = await ctx.subagents.startActivation({
-      provider,
-      label: typeof config.label === 'string' && config.label !== '' ? config.label : '旁问',
-      request: {
-        prompt: [{ type: 'text', text: question }],
-        parent,
-        signal: controller.signal,
-      },
+  const session = ctx.sessions.get(sessionId);
+  const prompt = buildPrompt(recentContext(session, config.contextMessages, config.contextChars), question);
+  const agentPreset = typeof config.agentPreset === 'string' ? config.agentPreset.trim() : '';
+  const spec = {
+    provider,
+    label: typeof config.label === 'string' && config.label !== '' ? config.label : '旁问',
+    request: {
+      prompt,
+      parent,
       signal: controller.signal,
-      delivery: 'caller',
-    });
+      ...(agentPreset === '' ? {} : { agentPreset }),
+    },
+    signal: controller.signal,
+    delivery: 'caller',
+  };
+
+  try {
+    let activation;
+    try {
+      activation = await ctx.subagents.startActivation(spec);
+    } catch (error) {
+      // A provider that owns its composition (fork) may refuse a preset.
+      if (agentPreset === '' || !(error instanceof Error) || !/preset/i.test(error.message)) throw error;
+      delete spec.request.agentPreset;
+      activation = await ctx.subagents.startActivation(spec);
+    }
 
     // Keep the newest activations resident so their sidebar chat stays warm;
     // release the oldest beyond the configured bound (it cold-resumes later).
